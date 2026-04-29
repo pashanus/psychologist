@@ -1,13 +1,10 @@
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 
-def test_choice_keyboard():
+def start_test_keyboard():
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [
-                InlineKeyboardButton(text="Краткий тест", callback_data="test_short"),
-                InlineKeyboardButton(text="Подробный тест", callback_data="test_full"),
-            ]
+            [InlineKeyboardButton(text="Начать тест", callback_data="start_test")]
         ]
     )
 

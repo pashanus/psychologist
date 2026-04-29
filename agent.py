@@ -14,8 +14,8 @@ from openai import AsyncOpenAI
 from dotenv import load_dotenv
 
 from states import TestState
-from test_data import SHORT_TEST
-from keyboards import test_choice_keyboard, answer_keyboard
+from test_data import TEST
+from keyboards import start_test_keyboard, answer_keyboard
 from db import (
     connect_db,
     close_db,
@@ -39,17 +39,19 @@ logger = logging.getLogger("deepseek-telegram-bot")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 
-SYSTEM_PROMPT = os.getenv(
-    "SYSTEM_PROMPT",
-    "Ты поддерживающий, тёплый и внимательный собеседник. Отвечай по-русски."
-    "Используй HTML-разметку Telegram:"
-    "- <b>жирный</b>"
-    "- <i>курсив</i>"
-    "- <u>подчёркнутый</u>"
-    "не нужно отвечать большим текстом, МАКСИМУМ 20 предложений"
+SYSTEM_PROMPT = '''
+    Ты — поддерживающий психологически ориентированный собеседник(мужчина). Не ставь диагнозов, не используй клинические ярлыки и не приписывай человеку расстройства.
+    Твоя задача — помогать пользователю прояснять состояние, снижать напряжение и находить следующий небольшой шаг. Не критикуй пользователя, только помогай
+    Используй профиль пользователя, чтобы адаптировать стиль ответа.
+    Не упоминай сам профиль напрямую.
+    Язык: русский.
+    Используй HTML-разметку Telegram:
+    - <b>жирный</b>
+    - <i>курсив</i>
+    - <u>подчёркнутый</u>
+    
+'''
 
-
-)
 
 MODEL_NAME = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro")
 THINKING_MODE = os.getenv("DEEPSEEK_THINKING_MODE", "false").lower() in {"1", "true", "yes", "on"}
@@ -135,27 +137,78 @@ def profile_to_prompt(profile) -> str:
 
     parts = []
 
-    introversion = profile["introversion"]
-    need_support = profile["need_support"]
-    directness = profile["directness"]
-    detail_preference = profile["detail_preference"]
+    def level(value, low=0.3, high=0.7):
+        if value is None:
+            return "unknown"
+        if value < low:
+            return "low"
+        elif value > high:
+            return "high"
+        return "medium"
 
-    if introversion is not None and introversion >= 0.7:
-        parts.append("Пользователь склонен к интроверсии: не дави, не будь навязчивым.")
+    # --- интроверсия ---
+    lvl = level(profile.get("introversion"))
+    if lvl == "high":
+        parts.append("Пользователь предпочитает спокойное, ненавязчивое общение.")
+    elif lvl == "low":
+        parts.append("Пользователь комфортно чувствует себя в активном взаимодействии.")
 
-    if need_support is not None and need_support >= 0.7:
-        parts.append("Пользователю важна эмоциональная поддержка: отвечай мягко и с эмпатией.")
+    # --- поддержка ---
+    lvl = level(profile.get("need_support"))
+    if lvl == "high":
+        parts.append("Ему важны эмпатия, поддержка и бережный тон.")
+    elif lvl == "low":
+        parts.append("Он меньше нуждается в эмоциональной поддержке, можно говорить более нейтрально.")
 
-    if directness is not None and directness >= 0.7:
-        parts.append("Пользователь предпочитает прямые ответы: говори по делу, без воды.")
+    # --- прямота ---
+    lvl = level(profile.get("directness"))
+    if lvl == "high":
+        parts.append("Предпочитает прямые и ясные формулировки.")
+    elif lvl == "low":
+        parts.append("Лучше использовать мягкие и осторожные формулировки.")
 
-    if detail_preference is not None:
-        if detail_preference >= 0.75:
-            parts.append("Иногда можно давать более подробные объяснения, но без перегрузки.")
-        elif detail_preference >= 0.4:
-            parts.append("Давай умеренно подробные ответы, без лишней воды.")
-        else:
-            parts.append("Отвечай кратко и по делу, избегай длинных объяснений.")
+    # --- детализация ---
+    lvl = level(profile.get("detail_preference"))
+    if lvl == "high":
+        parts.append("Любит структурированные и подробные объяснения.")
+    elif lvl == "low":
+        parts.append("Предпочитает краткие ответы без лишних деталей.")
+
+    # --- тревожность ---
+    lvl = level(profile.get("anxiety"))
+    if lvl == "high":
+        parts.append("Склонен к тревожности, важно снижать напряжение и давать ощущение безопасности.")
+    elif lvl == "low":
+        parts.append("Обычно эмоционально стабилен.")
+
+    # --- самооценка ---
+    lvl = level(profile.get("self_esteem"))
+    if lvl == "low":
+        parts.append("Склонен к самокритике, важно избегать давления и оценочных суждений.")
+    elif lvl == "high":
+        parts.append("Уверен в себе.")
+
+    # --- чувствительность ---
+    lvl = level(profile.get("emotional_sensitivity"))
+    if lvl == "high":
+        parts.append("Чувствителен к словам, важно быть аккуратным в формулировках.")
+
+    # --- доверие ---
+    lvl = level(profile.get("trust"))
+    if lvl == "low":
+        parts.append("Может быть насторожен, важно говорить прозрачно и без скрытых смыслов.")
+    elif lvl == "high":
+        parts.append("Склонен доверять.")
+
+    # --- руминации ---
+    lvl = level(profile.get("rumination"))
+    if lvl == "high":
+        parts.append("Склонен зацикливаться на мыслях, полезны техники переключения.")
+
+    # --- контроль ---
+    lvl = level(profile.get("control_need"))
+    if lvl == "high":
+        parts.append("Ему важно ощущение контроля, полезны чёткие и предсказуемые шаги.")
 
     return "\n".join(parts)
 
@@ -180,9 +233,10 @@ async def cmd_start(message: Message) -> None:
     user = await get_user(message.from_user.id)
     if user and not user["test_completed"]:
         await message.answer(
-            "Привет. Я на связи.\n\n"
-            "Сначала выбери формат теста, чтобы я лучше подстраивался под тебя:",
-            reply_markup=test_choice_keyboard(),
+            "Привет, я на связи.\n\n"
+            "Для начала хочу предложить тебе тест для установления твоего типа личности. "
+            "Его прохождение займет около 2 минут:",
+            reply_markup=start_test_keyboard(),
         )
         return
 
@@ -222,7 +276,7 @@ async def handle_text(message: Message) -> None:
     await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
 
     try:
-        history = await load_recent_messages(user_id, limit=12)
+        history = await load_recent_messages(user_id, limit=6)
         result = await ask_deepseek(user_id, history, user_text)
     except Exception as exc:
         logger.exception("DeepSeek request failed: %s", exc)
@@ -238,28 +292,27 @@ async def handle_text(message: Message) -> None:
 
     await message.answer(reply, parse_mode="HTML")
 
-@router.callback_query(F.data.startswith("test_"))
-async def handle_test_choice(callback, state: FSMContext):
-    user_id = callback.from_user.id
-    choice = callback.data
-
-    mode = "short" if choice == "test_short" else "full"
-
-    # пока используем только короткий тест
-    questions = SHORT_TEST
+@router.callback_query(F.data == "start_test")
+async def start_test(callback, state: FSMContext):
+    questions = TEST
 
     await state.update_data(
-        mode=mode,
         questions=questions,
         answers=[],
         index=0,
     )
 
     await state.set_state(TestState.answering)
+
+    total = len(questions)
+
     await callback.message.edit_text(
-        "Начинаем тест.\n\n" + questions[0][0] + "\n\n1 — не согласен\n5 — полностью согласен",
+        f"Вопрос 1/{total}\n\n"
+        f"{questions[0]['question']}\n\n"
+        "1 — не согласен\n5 — полностью согласен",
         reply_markup=answer_keyboard()
     )
+
     await callback.answer()
 
 @router.callback_query(F.data.startswith("ans_"), TestState.answering)
@@ -282,31 +335,34 @@ async def handle_answer(callback, state: FSMContext):
             "need_support": 0,
             "directness": 0,
             "detail_preference": 0,
+            "anxiety": 0,
+            "self_esteem": 0,
+            "emotional_sensitivity": 0,
+            "trust": 0,
+            "rumination": 0,
+            "control_need": 0,
         }
 
         counts = {k: 0 for k in result}
 
-        for (question, key), answer in zip(questions, answers):
-            result[key] += answer
+        for q, answer in zip(questions, answers):
+            key = q["key"]
+            reverse = q.get("reverse", False)
+            score = answer if not reverse else 6 - answer
+            result[key] += score
             counts[key] += 1
 
         for key in result:
             if counts[key] > 0:
                 result[key] = (result[key] / counts[key] - 1) / 4
 
-        await upsert_profile(
-            callback.from_user.id,
-            result["introversion"],
-            result["need_support"],
-            result["directness"],
-            result["detail_preference"],
-        )
+        await upsert_profile(callback.from_user.id, result)
 
-        await set_test_completed(callback.from_user.id, data["mode"])
+        await set_test_completed(callback.from_user.id, "single")
 
         await state.clear()
 
-        await callback.message.edit_text("Тест завершён. Теперь я лучше понимаю, как с тобой общаться.")
+        await callback.message.edit_text("Тест завершен, спасибо за уделенное время! Теперь можешь задавать вопрос")
 
         await callback.answer()
         return
@@ -314,7 +370,8 @@ async def handle_answer(callback, state: FSMContext):
     # следующий вопрос
     await state.update_data(index=index, answers=answers)
 
-    next_question = questions[index][0]
+    total = len(questions)
+    next_question = f"Вопрос {index + 1}/{total}\n\n" + questions[index]["question"]
 
     await callback.message.edit_text(next_question, reply_markup=answer_keyboard())
     await callback.answer()

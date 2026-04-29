@@ -76,34 +76,54 @@ async def set_test_completed(user_id: int, test_mode: str) -> None:
         )
 
 
-async def upsert_profile(
-    user_id: int,
-    introversion: float,
-    need_support: float,
-    directness: float,
-    detail_preference: float,
-) -> None:
+async def upsert_profile(user_id: int, profile: dict) -> None:
     pool = _get_pool()
+
     async with pool.acquire() as conn:
         await conn.execute(
             """
             INSERT INTO user_profile (
-                user_id, introversion, need_support, directness, detail_preference, updated_at
+                user_id,
+                introversion,
+                need_support,
+                directness,
+                detail_preference,
+                anxiety,
+                self_esteem,
+                emotional_sensitivity,
+                trust,
+                rumination,
+                control_need,
+                updated_at
             )
-            VALUES ($1, $2, $3, $4, $5, NOW())
+            VALUES (
+                $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW()
+            )
             ON CONFLICT (user_id)
             DO UPDATE SET
                 introversion = EXCLUDED.introversion,
                 need_support = EXCLUDED.need_support,
                 directness = EXCLUDED.directness,
                 detail_preference = EXCLUDED.detail_preference,
+                anxiety = EXCLUDED.anxiety,
+                self_esteem = EXCLUDED.self_esteem,
+                emotional_sensitivity = EXCLUDED.emotional_sensitivity,
+                trust = EXCLUDED.trust,
+                rumination = EXCLUDED.rumination,
+                control_need = EXCLUDED.control_need,
                 updated_at = NOW()
             """,
             user_id,
-            introversion,
-            need_support,
-            directness,
-            detail_preference,
+            profile.get("introversion"),
+            profile.get("need_support"),
+            profile.get("directness"),
+            profile.get("detail_preference"),
+            profile.get("anxiety"),
+            profile.get("self_esteem"),
+            profile.get("emotional_sensitivity"),
+            profile.get("trust"),
+            profile.get("rumination"),
+            profile.get("control_need"),
         )
 
 
@@ -148,6 +168,24 @@ async def load_recent_messages(user_id: int, limit: int = 12) -> List[Dict[str, 
             user_id,
             limit,
         )
-
     # Возвращаем в правильном порядке: от старых к новым
     return [{"role": row["role"], "content": row["content"]} for row in reversed(rows)]
+
+async def get_summary(user_id: int) -> str | None:
+    pool = _get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT summary FROM users WHERE user_id = $1",
+            user_id,
+        )
+        return row["summary"] if row else None
+
+
+async def update_summary(user_id: int, summary: str) -> None:
+    pool = _get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE users SET summary = $2 WHERE user_id = $1",
+            user_id,
+            summary,
+        )
