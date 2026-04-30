@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import json
 from dataclasses import dataclass
 from typing import List
 
@@ -25,11 +26,12 @@ from db import (
     get_user,
     get_profile,
     upsert_profile,
-    set_test_completed
+    set_test_completed,
+    get_summary,
+    update_summary
 )
 
 load_dotenv()
-# print("ENV TEST:", os.getenv("DATABASE_URL"))
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -44,12 +46,13 @@ SYSTEM_PROMPT = '''
     Твоя задача — помогать пользователю прояснять состояние, снижать напряжение и находить следующий небольшой шаг. Не критикуй пользователя, только помогай
     Используй профиль пользователя, чтобы адаптировать стиль ответа.
     Не упоминай сам профиль напрямую.
+    Не пиши большого текста, если пользователь любит подобные объяснения - это не значит что надо расписать ему каждое слово
     Язык: русский.
     Используй HTML-разметку Telegram:
     - <b>жирный</b>
     - <i>курсив</i>
     - <u>подчёркнутый</u>
-    
+    НЕЛЬЗЯ использовать теги <ul>, <li>, <br>, <div>
 '''
 
 
@@ -95,7 +98,16 @@ def is_crisis_message(text: str) -> bool:
 async def build_messages(user_id: int, history: List[dict], user_text: str) -> List[dict]:
     system_prompt = await build_system_prompt(user_id)
 
+    summary = await get_summary(user_id)
+
     messages = [{"role": "system", "content": system_prompt}]
+
+    if summary:
+        messages.append({
+            "role": "system",
+            "content": f"Краткий контекст диалога:\n{summary}"
+        })
+
     messages.extend(history)
     messages.append({"role": "user", "content": user_text})
 
@@ -104,6 +116,9 @@ async def build_messages(user_id: int, history: List[dict], user_text: str) -> L
 
 async def ask_deepseek(user_id: int, history: List[dict], user_text: str) -> LLMResult:
     messages = await build_messages(user_id, history, user_text)
+
+    # logger.info("=== REQUEST TO DEEPSEEK ===")
+    # logger.info(json.dumps(messages, ensure_ascii=False, indent=2))
 
     extra_body = {"thinking": {"type": "enabled" if THINKING_MODE else "disabled"}}
 
@@ -223,6 +238,42 @@ async def build_system_prompt(user_id: int) -> str:
 
     return base_prompt
 
+async def summarize_dialogue(user_id: int, history: list[dict]) -> str:
+    old_summary = await get_summary(user_id)
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "Ты обновляешь долговременную память о пользователе.\n\n"
+                "Правила:\n"
+                "- НЕ теряй важные факты\n"
+                "- Сохраняй стабильные характеристики\n"
+                "- Убирай временные детали\n"
+                "- Пиши кратко (3-6 предложений)\n"
+                "- Верни только сам текст, без списков и без заголовков"
+            )
+        },
+        {
+            "role": "system",
+            "content": f"Текущая память:\n{old_summary or 'пусто'}"
+        },
+        *history,
+        {
+            "role": "user",
+            "content": "Сделай краткое обновление памяти о пользователе. Верни только готовый текст."
+        }
+    ]
+
+    response = await client.chat.completions.create(
+        model=MODEL_NAME,
+        messages=messages,
+        max_tokens=150,
+        temperature=0.3,
+    )
+
+    return (response.choices[0].message.content or "").strip()
+
 @router.message(CommandStart())
 async def cmd_start(message: Message) -> None:
     if not message.from_user:
@@ -234,7 +285,7 @@ async def cmd_start(message: Message) -> None:
     if user and not user["test_completed"]:
         await message.answer(
             "Привет, я на связи.\n\n"
-            "Для начала хочу предложить тебе тест для установления твоего типа личности. "
+            "Для начала хочу предложить тебе тест чтобы я смог подстроить свой стиль общения. "
             "Его прохождение займет около 2 минут:",
             reply_markup=start_test_keyboard(),
         )
@@ -281,7 +332,7 @@ async def handle_text(message: Message) -> None:
     except Exception as exc:
         logger.exception("DeepSeek request failed: %s", exc)
         await message.answer(
-            "Сейчас не получилось получить ответ от модели. Попробуй ещё раз через несколько секунд."
+            "Сейчас не получилось получить ответ. Попробуй ещё раз через несколько секунд."
         )
         return
 
@@ -291,6 +342,19 @@ async def handle_text(message: Message) -> None:
     await save_message(user_id, "assistant", reply)
 
     await message.answer(reply, parse_mode="HTML")
+    history_for_summary = history + [
+        {"role": "user", "content": user_text},
+        {"role": "assistant", "content": reply},
+    ]
+
+    summary = await summarize_dialogue(user_id, history_for_summary)
+
+    print("SUMMARY:", summary)
+
+    if summary:
+        await update_summary(user_id, summary)
+    else:
+        print("SUMMARY EMPTY, NOT SAVED")
 
 @router.callback_query(F.data == "start_test")
 async def start_test(callback, state: FSMContext):

@@ -5,8 +5,8 @@ import asyncpg
 from dotenv import load_dotenv
 from pathlib import Path
 
-load_dotenv(Path(__file__).resolve().parent / ".env")
-
+load_dotenv()
+from crypto_utils import encrypt_text, decrypt_text
 DATABASE_URL = os.getenv("DATABASE_URL")
 _pool: asyncpg.Pool | None = None
 
@@ -132,7 +132,19 @@ async def get_profile(user_id: int) -> Optional[asyncpg.Record]:
     async with pool.acquire() as conn:
         return await conn.fetchrow(
             """
-            SELECT user_id, introversion, need_support, directness, detail_preference, updated_at
+            SELECT
+                user_id,
+                introversion,
+                need_support,
+                directness,
+                detail_preference,
+                anxiety,
+                self_esteem,
+                emotional_sensitivity,
+                trust,
+                rumination,
+                control_need,
+                updated_at
             FROM user_profile
             WHERE user_id = $1
             """,
@@ -142,15 +154,17 @@ async def get_profile(user_id: int) -> Optional[asyncpg.Record]:
 
 async def save_message(user_id: int, role: str, content: str) -> None:
     pool = _get_pool()
+    encrypted = encrypt_text(content)
+
     async with pool.acquire() as conn:
         await conn.execute(
             """
-            INSERT INTO messages (user_id, role, content)
+            INSERT INTO messages (user_id, role, content_encrypted)
             VALUES ($1, $2, $3)
             """,
             user_id,
             role,
-            content,
+            encrypted,
         )
 
 
@@ -159,7 +173,7 @@ async def load_recent_messages(user_id: int, limit: int = 12) -> List[Dict[str, 
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT role, content
+            SELECT role, content_encrypted
             FROM messages
             WHERE user_id = $1
             ORDER BY created_at DESC, id DESC
@@ -168,8 +182,14 @@ async def load_recent_messages(user_id: int, limit: int = 12) -> List[Dict[str, 
             user_id,
             limit,
         )
-    # Возвращаем в правильном порядке: от старых к новым
-    return [{"role": row["role"], "content": row["content"]} for row in reversed(rows)]
+
+    return [
+        {
+            "role": row["role"],
+            "content": decrypt_text(row["content_encrypted"]),
+        }
+        for row in reversed(rows)
+    ]
 
 async def get_summary(user_id: int) -> str | None:
     pool = _get_pool()
