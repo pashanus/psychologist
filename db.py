@@ -56,8 +56,29 @@ async def get_user(user_id: int) -> Optional[asyncpg.Record]:
     pool = _get_pool()
     async with pool.acquire() as conn:
         return await conn.fetchrow(
-            "SELECT user_id, username, test_completed, test_mode, created_at FROM users WHERE user_id = $1",
+            """
+            SELECT user_id, username, test_completed, test_mode, age, gender, created_at
+            FROM users
+            WHERE user_id = $1
+            """,
             user_id,
+        )
+
+
+async def save_demographics(user_id: int, age: int | None = None, gender: str | None = None) -> None:
+    pool = _get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE users
+            SET
+                age = COALESCE($2, age),
+                gender = COALESCE($3, gender)
+            WHERE user_id = $1
+            """,
+            user_id,
+            age,
+            gender,
         )
 
 
@@ -208,4 +229,50 @@ async def update_summary(user_id: int, summary: str) -> None:
             "UPDATE users SET summary = $2 WHERE user_id = $1",
             user_id,
             summary,
+        )
+
+from datetime import datetime
+
+
+async def touch_user_activity(user_id: int) -> None:
+    pool = _get_pool()
+
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE users
+            SET last_user_message_at = NOW()
+            WHERE user_id = $1
+            """,
+            user_id,
+        )
+
+
+async def get_users_for_nudges():
+    pool = _get_pool()
+
+    async with pool.acquire() as conn:
+        return await conn.fetch(
+            """
+            SELECT
+                user_id,
+                last_user_message_at,
+                last_nudge_at
+            FROM users
+            WHERE nudges_enabled = TRUE
+            """
+        )
+
+
+async def update_last_nudge(user_id: int):
+    pool = _get_pool()
+
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE users
+            SET last_nudge_at = NOW()
+            WHERE user_id = $1
+            """,
+            user_id,
         )
