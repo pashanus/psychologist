@@ -351,6 +351,24 @@ async def cmd_start(message: Message) -> None:
 async def cmd_reset(message: Message) -> None:
     await message.answer("Команда сброса пока не подключена к отдельному статусу.")
 
+async def update_summary_background(
+    user_id: int,
+    history: list[dict],
+):
+    try:
+        summary = await summarize_dialogue(user_id, history)
+
+        if summary:
+            old_summary = await get_summary(user_id)
+
+            if summary != old_summary:
+                await update_summary(user_id, summary)
+
+            logger.info("SUMMARY UPDATED: %s", summary)
+
+    except Exception as exc:
+        logger.exception("Summary update failed: %s", exc)
+
 
 @router.message(F.text, StateFilter(None))
 async def handle_text(message: Message) -> None:
@@ -397,17 +415,13 @@ async def handle_text(message: Message) -> None:
         {"role": "assistant", "content": reply},
     ]
 
-    try:
-        summary = await summarize_dialogue(user_id, history_for_summary)
-        if summary:
-            old_summary = await get_summary(user_id)
-            if summary != old_summary:
-                await update_summary(user_id, summary)
-            logger.info("SUMMARY UPDATED: %s", summary)
-        else:
-            logger.info("SUMMARY EMPTY, NOT SAVED")
-    except Exception as exc:
-        logger.exception("Summary update failed: %s", exc)
+    asyncio.create_task(
+        update_summary_background(
+            user_id,
+            history_for_summary,
+        )
+    )
+
 
 
 @router.callback_query(F.data == "start_test")
